@@ -1,0 +1,62 @@
+version: "3.8"
+
+# =============================================================================
+# Phase 1 — Infrastructure
+# Services: Postgres (pgvector) + Redis
+#
+# Start:   docker-compose up -d
+# Stop:    docker-compose down
+# Logs:    docker-compose logs -f
+# Reset:   docker-compose down -v   (drops all data volumes)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Postgres + pgvector
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rag-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-rag_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-rag_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis — query cache + Celery broker (broker added in Phase 8)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local

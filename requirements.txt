@@ -1,0 +1,39 @@
+# --- Core API ---
+fastapi
+uvicorn
+
+# --- Database ---
+psycopg[binary]
+asyncpg
+sqlalchemy
+pgvector
+redis
+
+# --- Embeddings ---
+openai
+sentence-transformers
+
+# --- Agentic ---
+langchain
+langgraph
+
+# --- Retrieval ---
+rank-bm25
+tiktoken
+
+# --- Multimodal ---
+pymupdf
+python-docx
+pillow
+
+# --- Data ---
+pandas
+numpy
+
+# --- Evaluation ---
+ragas
+
+# --- Utils ---
+python-dotenv
+pydantic
+loguru
