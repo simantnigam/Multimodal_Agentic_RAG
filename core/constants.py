@@ -37,6 +37,14 @@ MODEL_DIM_MAP: dict[str, int] = {
 EMBEDDING_PROVIDER_BGE = "bge"
 EMBEDDING_PROVIDER_OPENAI = "openai"
 
+# =============================================================================
+# Vision (image captioning)
+# =============================================================================
+
+VISION_PROVIDER_ANTHROPIC = "anthropic"
+VISION_PROVIDER_OPENAI    = "openai"
+VISION_PROVIDER_NONE      = "none"
+
 
 # =============================================================================
 # Retrieval

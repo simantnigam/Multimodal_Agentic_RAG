@@ -1,12 +1,12 @@
-# Requires: uv add pydantic-settings
+import os
 from functools import lru_cache
-from pydantic import model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
 
 from core.constants import (
     MODEL_DIM_MAP,
     EMBEDDING_PROVIDER_BGE,
     EMBEDDING_PROVIDER_OPENAI,
+    VISION_PROVIDER_ANTHROPIC,
     CHUNK_MIN_TOKENS,
     CHUNK_MAX_TOKENS,
     CHUNKING_SIMILARITY_THRESHOLD,
@@ -25,109 +25,126 @@ from core.constants import (
 )
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
+class Settings:
+    """
+    Loads configuration from environment variables (via .env).
+    load_dotenv() strips inline comments before populating os.environ,
+    so values like `APP_PORT=8000  # comment` resolve correctly to `8000`.
+    """
 
-    # -------------------------------------------------------------------------
-    # App
-    # -------------------------------------------------------------------------
-    app_env:        str = "development"
-    app_host:       str = "0.0.0.0"
-    app_port:       int = 8000
-    app_workers:    int = 4
-    log_level:      str = "INFO"
+    def __init__(self) -> None:
+        load_dotenv(override=False)  # won't overwrite vars already set in the shell
 
-    # -------------------------------------------------------------------------
-    # Database
-    # -------------------------------------------------------------------------
-    database_url:       str = "postgresql+asyncpg://admin:admin@localhost:5432/rag_db"
-    db_pool_size:       int = 10
-    db_max_overflow:    int = 10
+        # ---------------------------------------------------------------------
+        # App
+        # ---------------------------------------------------------------------
+        self.app_env        = os.getenv("APP_ENV",      "development")
+        self.app_host       = os.getenv("APP_HOST",     "0.0.0.0")
+        self.app_port       = int(os.getenv("APP_PORT",     "8000"))
+        self.app_workers    = int(os.getenv("APP_WORKERS",  "4"))
+        self.log_level      = os.getenv("LOG_LEVEL",    "INFO").upper()
 
-    # -------------------------------------------------------------------------
-    # Redis
-    # -------------------------------------------------------------------------
-    redis_url:          str = "redis://localhost:6379/0"
-    cache_ttl_seconds:  int = 3600
+        # ---------------------------------------------------------------------
+        # Database
+        # ---------------------------------------------------------------------
+        self.database_url    = os.getenv("DATABASE_URL",    "postgresql+asyncpg://admin:admin@localhost:5432/rag_db")
+        self.db_pool_size    = int(os.getenv("DB_POOL_SIZE",    "10"))
+        self.db_max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "10"))
 
-    # -------------------------------------------------------------------------
-    # Celery
-    # -------------------------------------------------------------------------
-    celery_broker_url:      str = "redis://localhost:6379/1"
-    celery_result_backend:  str = "redis://localhost:6379/2"
-    celery_queue_ingestion: str = QUEUE_INGESTION
-    celery_queue_embedding: str = QUEUE_EMBEDDING
-    celery_queue_storage:   str = QUEUE_STORAGE
-    celery_max_retries:     int = 3
-    celery_retry_delay:     int = 60
+        # ---------------------------------------------------------------------
+        # Redis
+        # ---------------------------------------------------------------------
+        self.redis_url         = os.getenv("REDIS_URL",          "redis://localhost:6379/0")
+        self.cache_ttl_seconds = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 
-    # -------------------------------------------------------------------------
-    # LLM
-    # -------------------------------------------------------------------------
-    anthropic_api_key:  str   = ""
-    llm_model:          str   = "claude-sonnet-4-6"
-    llm_max_tokens:     int   = 1000
-    llm_temperature:    float = 0.0
-    openai_api_key:     str   = ""
+        # ---------------------------------------------------------------------
+        # Celery
+        # ---------------------------------------------------------------------
+        self.celery_broker_url      = os.getenv("CELERY_BROKER_URL",     "redis://localhost:6379/1")
+        self.celery_result_backend  = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
+        self.celery_queue_ingestion = os.getenv("CELERY_QUEUE_INGESTION", QUEUE_INGESTION)
+        self.celery_queue_embedding = os.getenv("CELERY_QUEUE_EMBEDDING", QUEUE_EMBEDDING)
+        self.celery_queue_storage   = os.getenv("CELERY_QUEUE_STORAGE",   QUEUE_STORAGE)
+        self.celery_max_retries     = int(os.getenv("CELERY_MAX_RETRIES", "3"))
+        self.celery_retry_delay     = int(os.getenv("CELERY_RETRY_DELAY", "60"))
 
-    # -------------------------------------------------------------------------
-    # Embeddings
-    # -------------------------------------------------------------------------
-    embedding_provider:         str = EMBEDDING_PROVIDER_BGE
-    embedding_model:            str = "BAAI/bge-large-en-v1.5"
-    embedding_model_version:    str = "bge-large-en-v1.5"
-    embedding_dim:              int = 1024
-    embedding_batch_size:       int = 64
+        # ---------------------------------------------------------------------
+        # LLM
+        # ---------------------------------------------------------------------
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        self.llm_model         = os.getenv("LLM_MODEL",         "claude-sonnet-4-6")
+        self.llm_max_tokens    = int(os.getenv("LLM_MAX_TOKENS",   "1000"))
+        self.llm_temperature   = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+        self.openai_api_key    = os.getenv("OPENAI_API_KEY", "")
 
-    # -------------------------------------------------------------------------
-    # Chunking
-    # -------------------------------------------------------------------------
-    chunking_similarity_threshold:  float = CHUNKING_SIMILARITY_THRESHOLD
-    chunk_min_tokens:               int   = CHUNK_MIN_TOKENS
-    chunk_max_tokens:               int   = CHUNK_MAX_TOKENS
+        # ---------------------------------------------------------------------
+        # Vision (image captioning)
+        # ---------------------------------------------------------------------
+        # Provider auto-detected if not set: anthropic if key present, else openai, else none
+        self.vision_provider    = os.getenv("VISION_PROVIDER",    self._detect_vision_provider())
+        self.vision_model       = os.getenv("VISION_MODEL",       "claude-sonnet-4-6")
+        self.vision_max_tokens  = int(os.getenv("VISION_MAX_TOKENS", "300"))
 
-    # -------------------------------------------------------------------------
-    # Retrieval
-    # -------------------------------------------------------------------------
-    top_k_pre_rerank:   int   = DEFAULT_TOP_K_PRE_RERANK
-    top_k_post_rerank:  int   = DEFAULT_TOP_K_POST_RERANK
-    dense_weight:       float = DEFAULT_DENSE_WEIGHT
-    sparse_weight:      float = DEFAULT_SPARSE_WEIGHT
-    ivfflat_probes:     int   = IVFFLAT_PROBES
+        # ---------------------------------------------------------------------
+        # Embeddings
+        # ---------------------------------------------------------------------
+        self.embedding_provider      = os.getenv("EMBEDDING_PROVIDER",      EMBEDDING_PROVIDER_BGE)
+        self.embedding_model         = os.getenv("EMBEDDING_MODEL",          "BAAI/bge-large-en-v1.5")
+        self.embedding_model_version = os.getenv("EMBEDDING_MODEL_VERSION",  "bge-large-en-v1.5")
+        self.embedding_dim           = int(os.getenv("EMBEDDING_DIM",        "1024"))
+        self.embedding_batch_size    = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
 
-    # -------------------------------------------------------------------------
-    # Agents & Orchestration
-    # -------------------------------------------------------------------------
-    validator_threshold:    float = VALIDATOR_THRESHOLD
-    max_retries:            int   = MAX_RETRIES
-    context_max_tokens:     int   = CONTEXT_MAX_TOKENS
-    query_expansion_count:  int   = QUERY_EXPANSION_COUNT
+        # ---------------------------------------------------------------------
+        # Chunking
+        # ---------------------------------------------------------------------
+        self.chunking_similarity_threshold = float(os.getenv("CHUNKING_SIMILARITY_THRESHOLD", str(CHUNKING_SIMILARITY_THRESHOLD)))
+        self.chunk_min_tokens              = int(os.getenv("CHUNK_MIN_TOKENS", str(CHUNK_MIN_TOKENS)))
+        self.chunk_max_tokens              = int(os.getenv("CHUNK_MAX_TOKENS", str(CHUNK_MAX_TOKENS)))
 
-    # -------------------------------------------------------------------------
-    # Observability
-    # -------------------------------------------------------------------------
-    langsmith_api_key:  str  = ""
-    langsmith_project:  str  = "multimodal-rag"
-    langsmith_tracing:  bool = False    # opt-in: requires LANGSMITH_API_KEY to be set
-    prometheus_port:    int  = 9090
+        # ---------------------------------------------------------------------
+        # Retrieval
+        # ---------------------------------------------------------------------
+        self.top_k_pre_rerank  = int(os.getenv("TOP_K_PRE_RERANK",  str(DEFAULT_TOP_K_PRE_RERANK)))
+        self.top_k_post_rerank = int(os.getenv("TOP_K_POST_RERANK", str(DEFAULT_TOP_K_POST_RERANK)))
+        self.dense_weight      = float(os.getenv("DENSE_WEIGHT",    str(DEFAULT_DENSE_WEIGHT)))
+        self.sparse_weight     = float(os.getenv("SPARSE_WEIGHT",   str(DEFAULT_SPARSE_WEIGHT)))
+        self.ivfflat_probes    = int(os.getenv("IVFFLAT_PROBES",    str(IVFFLAT_PROBES)))
 
-    # -------------------------------------------------------------------------
-    # Evaluation
-    # -------------------------------------------------------------------------
-    eval_golden_dataset_path:   str = "data/golden_dataset.json"
-    eval_precision_k:           int = 5
-    eval_llm_judge_model:       str = "claude-sonnet-4-6"
+        # ---------------------------------------------------------------------
+        # Agents & Orchestration
+        # ---------------------------------------------------------------------
+        self.validator_threshold   = float(os.getenv("VALIDATOR_THRESHOLD",  str(VALIDATOR_THRESHOLD)))
+        self.max_retries           = int(os.getenv("MAX_RETRIES",            str(MAX_RETRIES)))
+        self.context_max_tokens    = int(os.getenv("CONTEXT_MAX_TOKENS",     str(CONTEXT_MAX_TOKENS)))
+        self.query_expansion_count = int(os.getenv("QUERY_EXPANSION_COUNT",  str(QUERY_EXPANSION_COUNT)))
 
-    # -------------------------------------------------------------------------
-    # Validators
-    # -------------------------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # Observability
+        # ---------------------------------------------------------------------
+        self.langsmith_api_key  = os.getenv("LANGSMITH_API_KEY",  "")
+        self.langsmith_project  = os.getenv("LANGSMITH_PROJECT",  "multimodal-rag")
+        self.langsmith_tracing  = os.getenv("LANGSMITH_TRACING",  "false").strip().lower() == "true"
+        self.prometheus_port    = int(os.getenv("PROMETHEUS_PORT", "9090"))
 
-    @model_validator(mode="after")
-    def check_embedding_consistency(self) -> "Settings":
+        # ---------------------------------------------------------------------
+        # Evaluation
+        # ---------------------------------------------------------------------
+        self.eval_golden_dataset_path = os.getenv("EVAL_GOLDEN_DATASET_PATH", "data/golden_dataset.json")
+        self.eval_precision_k         = int(os.getenv("EVAL_PRECISION_K",      "5"))
+        self.eval_llm_judge_model     = os.getenv("EVAL_LLM_JUDGE_MODEL",      "claude-sonnet-4-6")
+
+        self._validate()
+
+    def _detect_vision_provider(self) -> str:
+        """Auto-detect vision provider from available API keys if VISION_PROVIDER not set."""
+        if os.getenv("ANTHROPIC_API_KEY", ""):
+            return VISION_PROVIDER_ANTHROPIC
+        if os.getenv("OPENAI_API_KEY", ""):
+            return "openai"
+        return "none"
+
+    def _validate(self) -> None:
+        # Embedding model <-> dim consistency
         expected_dim = MODEL_DIM_MAP.get(self.embedding_model)
         if expected_dim is not None and self.embedding_dim != expected_dim:
             raise ValueError(
@@ -135,6 +152,8 @@ class Settings(BaseSettings):
                 f"model '{self.embedding_model}' (expected {expected_dim}). "
                 f"Update EMBEDDING_DIM in your .env."
             )
+
+        # Provider <-> model family consistency
         if self.embedding_provider == EMBEDDING_PROVIDER_BGE and "BAAI" not in self.embedding_model:
             raise ValueError(
                 f"EMBEDDING_PROVIDER=bge but EMBEDDING_MODEL='{self.embedding_model}' "
@@ -145,38 +164,28 @@ class Settings(BaseSettings):
                 f"EMBEDDING_PROVIDER=openai but EMBEDDING_MODEL='{self.embedding_model}' "
                 f"is a BGE model. Check your .env."
             )
-        return self
 
-    @model_validator(mode="after")
-    def check_embedding_version_sync(self) -> "Settings":
-        # embedding_model_version is stored per chunk in the DB.
-        # It must be a suffix-match of embedding_model to avoid silent drift.
-        # e.g. model=BAAI/bge-large-en-v1.5 → version must contain bge-large-en-v1.5
+        # Model name <-> version sync
         if self.embedding_model_version not in self.embedding_model:
             raise ValueError(
                 f"EMBEDDING_MODEL_VERSION='{self.embedding_model_version}' does not match "
                 f"EMBEDDING_MODEL='{self.embedding_model}'. "
                 f"Update EMBEDDING_MODEL_VERSION in your .env."
             )
-        return self
 
-    @model_validator(mode="after")
-    def check_hybrid_weights(self) -> "Settings":
+        # Hybrid weights must sum to 1.0
         if abs(self.dense_weight + self.sparse_weight - 1.0) > 0.001:
             raise ValueError(
                 f"DENSE_WEIGHT + SPARSE_WEIGHT must equal 1.0 "
                 f"(got {self.dense_weight + self.sparse_weight:.3f}). Check your .env."
             )
-        return self
 
-    @model_validator(mode="after")
-    def check_chunk_token_bounds(self) -> "Settings":
+        # Chunk token bounds
         if self.chunk_min_tokens >= self.chunk_max_tokens:
             raise ValueError(
                 f"CHUNK_MIN_TOKENS ({self.chunk_min_tokens}) must be less than "
                 f"CHUNK_MAX_TOKENS ({self.chunk_max_tokens}). Check your .env."
             )
-        return self
 
 
 @lru_cache

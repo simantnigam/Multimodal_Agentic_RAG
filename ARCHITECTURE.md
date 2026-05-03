@@ -253,20 +253,24 @@ DEGRADE if final_score < 0.75 and retry_count >= 2 → return with low_confidenc
 Raw Document (PDF / HTML / Image / DOCX)
  ↓
 Document Parser
-    ├─ Extract text blocks
-    ├─ Extract images → save to assets table
-    └─ Extract tables → save to assets table
+    ├─ Extract text blocks → sections
+    ├─ Extract images
+    │       └─ Vision LLM captioning (Claude / GPT-4o)
+    │               → semantic caption stored as asset content
+    └─ Extract tables → markdown representation
  ↓
 Chunking Engine (Section 5)
+    └─ Semantic boundary detection + context injection
  ↓
 Embedding Service (Section 6)
-    └─ Batch embed chunks (BGE, batch_size=64)
+    ├─ Batch embed text chunks (BGE, batch_size=64)
+    └─ Batch embed image captions + table content (same model)
  ↓
 Postgres Storage
     ├─ INSERT INTO documents
     ├─ INSERT INTO sections
-    ├─ INSERT INTO chunks (with embedding + tsv)
-    ├─ INSERT INTO assets
+    ├─ INSERT INTO chunks  (text embedding + tsv trigger)
+    ├─ INSERT INTO assets  (image/table with caption embedding)
     └─ INSERT INTO relationships (chunk ↔ asset links)
  ↓
 Index Update (ivfflat auto-updates on INSERT)
@@ -302,9 +306,43 @@ def ingest_document(self, doc_path: str, metadata: dict):
 | Failure Point | Behavior |
 |---|---|
 | Parse failure | Mark document as `failed`, log error, do not retry automatically |
+| Vision captioning failure | Log warning, fall back to `"Figure on page N"` — ingestion continues |
 | Embedding API/model failure | Retry up to 3× with backoff |
 | DB write failure | Retry up to 3×; on final failure, dead-letter queue |
 | Partial ingestion | Transactional: roll back all tables for that doc_id |
+
+---
+
+## 4.4 Vision Captioning Design
+
+Images extracted during parsing are captioned via a configurable vision LLM before storage. The caption is stored as the asset's `content` field and embedded — making images semantically searchable.
+
+### Provider Selection
+
+```
+VISION_PROVIDER=anthropic  →  Claude (claude-sonnet-4-6 or VISION_MODEL)
+VISION_PROVIDER=openai     →  GPT-4o (or VISION_MODEL)
+VISION_PROVIDER=none       →  No captioning — placeholder text only
+Not set                    →  Auto-detected: anthropic if key present, else openai, else none
+```
+
+### Caption Prompt
+
+```
+Describe this image concisely for a document retrieval system.
+Focus on the key information, data, or concepts shown.
+If it is a chart or graph, describe the data and trends.
+If it is a diagram, describe the structure and relationships.
+Respond in 2-4 sentences.
+```
+
+### Why This Matters
+
+Without captioning, an image embedding is based on a filename or page number — semantically meaningless. With captioning, a query like *"show me the architecture diagram"* or *"chart showing retrieval precision"* can retrieve the correct image via semantic search.
+
+### Failure Behaviour
+
+Vision captioning failure (API error, missing key) is **non-blocking** — ingestion continues with a placeholder caption. The asset is stored and retrievable, just with reduced semantic quality.
 
 ---
 
@@ -387,15 +425,33 @@ Each chunk stores:
 
 ```json
 {
-  "section_title": "...",
-  "doc_id": "uuid",
-  "modality": "text | image | table",
-  "semantic_tags": ["tag1", "tag2"],
-  "linked_elements": ["asset_id_1", "asset_id_2"],
-  "chunk_summary": "...",
-  "prev_chunk_summary": "..."
+  "section_title":      "Introduction to RAG",
+  "chunk_index":        0,
+  "prev_chunk_summary": "First sentence of the previous chunk (Phase 2 placeholder).",
+  "linked_elements":    [],
+  "semantic_tags":      [],
+  "chunk_summary":      ""
 }
 ```
+
+| Field | Set By | Phase | Notes |
+|---|---|---|---|
+| `section_title` | `chunking/engine.py` | 2 | Injected into chunk content AND stored in metadata |
+| `chunk_index` | `chunking/engine.py` | 2 | Position within the section |
+| `prev_chunk_summary` | `chunking/engine.py` | 2 | First sentence of previous chunk — lightweight placeholder |
+| `linked_elements` | `ingestion/pipeline.py` | 2 | Populated with asset UUIDs during DB storage |
+| `semantic_tags` | Phase 4+ NLP/LLM | 4+ | Empty list placeholder until Phase 4 |
+| `chunk_summary` | Phase 4+ LLM | 4+ | Empty string placeholder until Phase 4 |
+
+### Step 3: Context Window Injection — Implementation Note
+
+Section title is injected directly into chunk content at chunking time:
+```
+[Section Title]
+
+{chunk text}
+```
+This ensures the embedding captures section context without a separate lookup. Full LLM-generated `prev_chunk_summary` and `chunk_summary` are deferred to Phase 4 after retrieval quality is measured.
 
 ---
 
@@ -626,6 +682,11 @@ EMBEDDING_MODEL=BAAI/bge-large-en-v1.5       # local model, no API key required
 EMBEDDING_MODEL_VERSION=bge-large-en-v1.5
 EMBEDDING_DIM=1024
 EMBEDDING_BATCH_SIZE=64
+
+# Vision (image captioning)
+VISION_PROVIDER=anthropic                     # anthropic | openai | none (auto-detected if unset)
+VISION_MODEL=claude-sonnet-4-6               # must support vision input
+VISION_MAX_TOKENS=300
 
 # Chunking
 CHUNKING_SIMILARITY_THRESHOLD=0.75
@@ -1070,11 +1131,16 @@ CREATE EXTENSION IF NOT EXISTS vector;
 | IVFFlat lists undersized | Poor ANN recall at scale | Tune lists = sqrt(num_rows); re-index on growth |
 | Wrong embedder in chunking | Threshold calibrated against wrong space | Use same BGE model for boundary detection |
 | No ingestion rollback | Partial doc state in DB | Wrap per-document inserts in a transaction |
+| Images stored without captions | Images not retrievable via semantic search | Enable vision captioning via VISION_PROVIDER |
+| Vision captioning blocks ingestion | Single API failure stops the whole pipeline | caption_image() failures are non-blocking — fall back to placeholder |
+| Vision model set to non-vision model | API error on every image | Ensure VISION_MODEL supports image input (claude-sonnet-4-6, gpt-4o) |
 
 ---
 
 # 18. Final Capabilities
 
+✔ Truly multimodal ingestion — images captioned via vision LLM (Claude / GPT-4o), tables as markdown, both embedded and retrievable
+✔ Configurable vision provider (anthropic | openai | none) with auto-detection and non-blocking fallback
 ✔ Multimodal ingestion pipeline (Celery async, transactional, error-resilient)
 ✔ Context-aware chunking with explicit similarity threshold (0.75, BGE-calibrated)
 ✔ Hybrid retrieval with normalized score fusion (dense + sparse + metadata filter)
